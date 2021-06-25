@@ -1,0 +1,526 @@
+---
+title: "GSE138126 Ib_R vs Ib_S"
+author: "Syahru Agung Setiawan"
+date: "25/05/2021"
+output: word_document
+---
+
+```{r General Data, echo=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(
+	echo = FALSE,
+	message = FALSE,
+	warning = FALSE
+)
+
+dir.rdata <- "D:/Cancer References/Ibrutinib Resistance in DLBCL/GSE138126 Ib_R vs Ib_S/GSE138126 Ib_R vs Ib_S.RData"
+load(dir.rdata)
+
+save.image (dir.rdata)
+
+library(BiocManager)
+library(GEOquery)
+library(limma)
+library(umap)
+library(forcats)
+library(stringr)
+library(ggrepel)
+library(tidyr)
+library(survminer)
+library(pheatmap)
+library(org.Hs.eg.db)
+library(ggplot2)
+library(ggforce)
+library(ggsci)
+library(ggsignif)
+library(ggbeeswarm)
+library(ggpubr)
+library(gridExtra)
+library(dplyr)
+library(tidyverse)
+library(gplots)
+library(clusterProfiler)
+library(pathview)
+library(enrichplot)
+library(annotate)
+library(HsAgilentDesign026652.db)
+library(AnnotationDbi)
+library(msigdbr)
+library(DOSE)
+
+# load series and platform data from GEO
+
+
+  
+gset <- getGEO("GSE138126", GSEMatrix =TRUE, AnnotGPL=TRUE)
+if (length(gset) > 1) idx <- grep("GPL13497", attr(gset, "names")) else idx <- 1
+gset <- gset[[idx]]
+
+# define cut-off P-value and logFC for DEGs
+
+pval.cutoff <- 0.01
+lfc.cutoff <- 2
+
+# make proper column names to match toptable 
+fvarLabels(gset) <- make.names(fvarLabels(gset))
+
+# group membership for all samples
+gsms <- paste0("111111111000000000")
+sml <- strsplit(gsms, split="")[[1]]
+
+# filter out excluded samples (marked as "X")
+sel <- which(sml != "X")
+sml <- sml[sel]
+gset <- gset[ ,sel]
+
+
+# log2 transformation
+ex <- exprs(gset)
+qx <- as.numeric(quantile(ex, c(0., 0.25, 0.5, 0.75, 0.99, 1.0), na.rm=T))
+LogC <- (qx[5] > 100) ||
+          (qx[6]-qx[1] > 50 && qx[2] > 0)
+if (LogC) { ex[which(ex <= 0)] <- NaN
+  exprs(gset) <- log2(ex) }
+
+# assign samples to groups and set up design matrix
+gs <- factor(sml)
+groups <- make.names(c("Ib_R","Ib_S"))
+levels(gs) <- groups
+gset$group <- gs
+design <- model.matrix(~group + 0, gset)
+colnames(design) <- levels(gs)
+
+
+fit <- lmFit(gset, design)  # fit linear model
+
+# set up contrasts of interest and recalculate model coefficients
+cts <- paste(groups, c(tail(groups, -1), head(groups, 1)), sep="-")
+cont.matrix <- makeContrasts(contrasts=cts[1], levels=design)
+fit2 <- contrasts.fit(fit, cont.matrix)
+
+# compute statistics and table of top significant genes
+fit2 <- eBayes(fit2, 0.01)
+tT <- topTable(fit2, adjust="fdr", sort.by="B", p.value=pval.cutoff, lfc=lfc.cutoff, number=250)
+
+tT <- subset(tT, select=c("ID","logFC","adj.P.Val","P.Value","t","GENE_SYMBOL","GENE_NAME"))
+write.table(tT, file=stdout(), row.names=F, sep="\t")
+
+write.csv(print(tT), file = "GSE138126 Limma Top250 GeneExp Analysis-Ib_RvsIb_S.csv")
+
+# Visualize and quality control test results.
+# Build histogram of P-values for all genes. Normal test
+# assumption is that most genes are not differentially expressed.
+tT2 <- topTable(fit2, adjust="fdr", sort.by="B", number=Inf)
+hist(tT2$P.Value, col = "grey", border = "white", xlab = "P-adj",
+  ylab = "Number of genes", main = "P-value distribution")
+
+# summarize test results as "up", "down" or "not expressed"
+dT <- decideTests(fit2, adjust.method="fdr",  p.value=pval.cutoff, lfc=lfc.cutoff)
+
+# Venn diagram of results
+vennDiagram(dT, circle.col=palette())
+
+# create Q-Q plot for t-statistic
+t.good <- which(!is.na(fit2$F)) # filter out bad probes
+qqt(fit2$t[t.good], fit2$df.total[t.good], main="Moderated t statistic")
+
+# volcano plot (log P-value vs log fold change)
+colnames(fit2) # list contrast names
+ct <- 1        # choose contrast of interest
+volcanoplot(fit2, coef=ct, main=colnames(fit2)[ct], pch=20,
+  highlight=length(which(dT[,ct]!=0)), names=rep('+', nrow(fit2)))
+
+# MD plot (log fold change vs mean log expression)
+# highlight statistically significant (p-adj < 0.05) probes
+plotMD(fit2, column=ct, status=dT[,ct], legend=F, pch=20, cex=1)
+abline(h=0)
+
+################################################################
+# General expression data analysis
+ex <- exprs(gset)
+
+# box-and-whisker plot
+ord <- order(gs)  # order samples by group
+palette(c("#1B9E77", "#7570B3", "#E7298A", "#E6AB02", "#D95F02",
+          "#66A61E", "#A6761D", "#B32424", "#B324B3", "#666666"))
+par(mar=c(7,4,2,1))
+title <- paste ("GSE138126", "/", annotation(gset), sep ="")
+boxplot(ex[,ord], boxwex=0.6, notch=T, main=title, outline=FALSE, las=2, col=gs[ord])
+legend("topleft", groups, fill=palette(), bty="n")
+
+# expression value distribution
+par(mar=c(4,4,2,1))
+title <- paste ("GSE138126", "/", annotation(gset), " value distribution", sep ="")
+plotDensities(ex, group=gs, main=title, legend ="topright")
+
+# UMAP plot (dimensionality reduction)
+ex <- na.omit(ex) # eliminate rows with NAs
+ex <- ex[!duplicated(ex), ]  # remove duplicates
+ump <- umap(t(ex), n_neighbors = 6, random_state = 123)
+par(mar=c(3,3,2,6), xpd=TRUE)
+plot(ump$layout, main="UMAP plot, nbrs=6", xlab="", ylab="", col=gs, pch=20, cex=1.5)
+legend("topright", inset=c(-0.15,0), legend=levels(gs), pch=20,
+col=1:nlevels(gs), title="Group", pt.cex=1.5)
+library("maptools")  # point labels without overlaps
+pointLabel(ump$layout, labels = rownames(ump$layout), method="SANN", cex=0.6)
+
+# mean-variance trend, helps to see if precision weights are needed
+plotSA(fit2, main="Mean variance trend, GSE138126")
+
+## Print Table into Excel File
+write.csv(print(tT2), file = "GSE138126 Limma GeneExp Analysis-Ib_RvsIb_S.csv")
+
+```
+
+```{r Custom Volcano Plot, echo=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(
+	echo = FALSE,
+	message = FALSE,
+	warning = FALSE
+)
+
+# Volcano Plot using GGPlot
+
+tT2.mutate <-tT2 %>% 
+  mutate(sig = case_when(
+  tT2$adj.P.Val < pval.cutoff & tT2$logFC> lfc.cutoff ~ "Overexp",
+  tT2$adj.P.Val <pval.cutoff & tT2$logFC< -(lfc.cutoff) ~ "Underexp",
+  TRUE ~ "NS"))
+
+tT2.mutate$sig <- ordered(tT2.mutate$sig , levels = c("Underexp","Overexp","NS"))
+
+color_pallete_lancet <- c("#00468BFF","#ED0000FF","#ADB6B6FF")
+
+volcano2 <- ggplot(tT2.mutate ,aes(x=logFC,y=-log10(adj.P.Val)))+geom_point(aes(col=sig)) + theme_bw() + scale_color_manual(name = "Gene Exp", values = color_pallete_lancet ) + ylab("-log10 adj.P-Value") + xlab("log2 Fold Change")
+volcano2 <- volcano2 + theme(legend.position = c(0.8, 0.8), legend.text=element_text(size=10), legend.title=element_text(size=10))
+volcano2 <- volcano2 + geom_hline(yintercept=c(-log10(pval.cutoff)), linetype="dashed", size = 1)+geom_vline(xintercept=c(-(lfc.cutoff),lfc.cutoff), linetype="dashed", size = 1)
+volcano2
+
+# Save Image
+png("Volcano_GSE138126_Ib_RvsIb_S.png", units="in", width=5, height=5, res=1000)
+volcano2
+dev.off()
+
+# Write CSV from DEGs
+write.csv(print(tT2.mutate), file = "GSE138126-DEGs-Ib_RvsIb_S.csv")
+
+
+# Bar Chart of DEGs
+library(dplyr)
+
+bar.deg <- ggplot(subset(tT2.mutate, sig != "NS") %>%
+         count(sig) %>%    
+         mutate(ypos = cumsum(n) - 0.5*n), aes(sig, n, fill=sig)) +
+  geom_bar(position="stack", stat="identity") +
+  geom_label(aes(label=paste0(n), y=n), fill="white",
+             position= position_dodge(width=1)) + theme_bw() + theme(legend.position="none",
+                                                                     axis.title.x=element_blank())
+bar.deg <- bar.deg + scale_fill_lancet() + ylab("Genes Number")
+bar.deg
+
+```
+
+```{r venn diagram, echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+# Venn Diagram Custom
+
+venn.number <- vennCounts(dT)
+class(venn.number) <- 'matrix'
+df.vdc <- as.data.frame(venn.number)[-1,] %>%
+  mutate(x = c(0),
+         y = c(0),
+         labels = c('DEGs'))
+
+venn.diag <- ggplot(df.vdc, aes(x0 = x, y0 = y, r = 1.5, fill = labels)) +
+    geom_circle(alpha = 1, size = 1, colour = 'grey') +
+    coord_fixed() +
+    theme_void()+
+    theme(legend.position = 'bottom') +
+    scale_fill_manual(values = c("#ED0000FF")) +
+    scale_colour_manual(values = c("#ED0000FF"), guide = FALSE) +
+    labs(fill = NULL) +
+    annotate("text", x = df.vdc$x, y = df.vdc$y, label = df.vdc$Counts, size = 12)
+venn.diag
+
+```
+
+```{r combine graph, echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+combine.volcano <- grid.arrange(volcano2,  arrangeGrob(bar.deg, venn.diag), ncol = 2, widths = c(3, 1))
+combine.volcano <- annotate_figure(combine.volcano, top = text_grob(
+  paste0("Ib_R vs Ib_S DLBCL"," (",gset@experimentData@other[["geo_accession"]], ")"),
+  face = "bold", size = 14))
+combine.volcano
+
+# Save Image
+png("Volcano_bar_GSE138126_Ib_RvsIb_S.png", units="in", width=8, height=5, res=1000)
+combine.volcano
+dev.off()
+```
+
+
+```{r Boxplot selected DEGs, echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+# Top ## Genes
+top.gene <- as.data.frame(exprs(gset)) 
+top.gene <- tibble::rownames_to_column(top.gene, "ID")
+top.table <- tT[1:32,] # Select Top number gene or change with interested Gene Symbol
+top.table <- inner_join(top.table, top.gene, by = "ID", all=TRUE)
+top.table <- subset(top.table, !(GENE_SYMBOL==""))
+top.table <- top.table %>% ## Checking if any duplicated Value, the maximum Abs will be kept
+  arrange(-abs(logFC)) %>%
+  filter(duplicated(GENE_SYMBOL) == FALSE)
+
+## Change Gene Name with Multi Gene Names into Single Name
+a <- strsplit(top.table$GENE_SYMBOL, split = "///")
+a <- lapply(a, function (x) x[1])
+a <- t(as.data.frame(a))
+rownames(a) <- NULL
+colnames(a) <- "GENE_SYMBOL2"
+top.table <- cbind(top.table,a)
+rm(a)
+top.table <- top.table %>% ## Checking if any duplicated Value, the maximum Abs will be kept
+  arrange(-abs(logFC)) %>%
+  filter(duplicated(GENE_SYMBOL2) == FALSE)
+
+rownames(top.table) <- top.table[,"GENE_SYMBOL2"]
+top.table <- top.table[order(-top.table$logFC),]
+top.table <- top.table[,-c(1:7,ncol(top.table))]
+
+ex.interest <- rbind(top.table, t(design))
+ex.interest <- t(ex.interest)
+ex.interest <- subset(ex.interest, select = -c(Ib_R))
+ex.interest <- as.data.frame(ex.interest)
+
+## Sort by T-Test P value
+pval.ex.interest <- ex.interest %>%
+    summarise_each(funs(t.test(.[Ib_S == 1], .[Ib_S == 0])$p.value), -Ib_S)
+pval.ex.interest <- t(pval.ex.interest) 
+rownames(pval.ex.interest) <- rownames(top.table)
+colnames(pval.ex.interest) <- "pval.test"
+pval.ex.interest <- as.data.frame(pval.ex.interest)
+top.table <- cbind(top.table, pval.ex.interest)
+gene.sig <- rownames(subset(top.table, select = pval.test < 0.05))
+gene.sig <- c(gene.sig, "Ib_S")
+
+#Select Top## as Visualized in Boxplots
+ex.interest <- ex.interest %>%
+  select(gene.sig)
+ex.interest.long <- reshape2::melt(ex.interest, id.vars = c("Ib_S"))
+
+# Boxplot facet by genes
+bplot.genes <- ggplot(ex.interest.long, aes(x=as.factor(Ib_S),
+                                            y=value, fill=as.factor(Ib_S))) + geom_boxplot() + facet_wrap(~variable, scales = "free") + geom_signif(comparisons = list(c("0", "1")),test = "t.test", color = "Black", map_signif_level=TRUE, vjust = 1, textsize = 4) + scale_x_discrete(labels = c("Ib_R","Ib_S")) + scale_fill_manual(values = c("#ED0000FF","#00468BFF"))
+bplot.genes <- bplot.genes + theme(legend.position = "none") + xlab("")
+bplot.genes
+
+# Save Image
+png("Boxplot_DEGs_Facet.png", units="in", width=5, height=4, res=1000)
+bplot.genes
+dev.off()
+```
+
+```{r heatmap DEGs, echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+col.pan <- colorpanel(200,"#00468BFF", "white","#ED0000FF")
+col.pan2 <- pal_nejm("default", alpha = 0.7)(6)
+
+# Assign Column Name for Annotation
+phenotype <- as.data.frame(design[,"Ib_S"])
+colnames(phenotype) <- "Phenotype"
+phenotype<- phenotype  %>% 
+transmute(Phenotype = case_when(
+  Phenotype == 0 ~ "Ib_R",
+  Phenotype == 1 ~ "Ib_S"))
+phenotype$Symbol <- rownames(phenotype)
+
+top.table2 <- as.matrix(subset(top.table, select = -c(pval.test)))
+top.table2 <- as.data.frame(t(top.table2))
+top.table2$Symbol <- rownames(top.table2)
+top.table2 <- left_join(top.table2, phenotype, by = "Symbol")
+top.table2 <- top.table2[order(top.table2$Phenotype, top.table2$Symbol),]
+rownames(top.table2) <- top.table2$Symbol
+top.table2 <- top.table2[,c(1:(ncol(top.table2)-2))]
+top.table2 <- as.matrix(t(top.table2))
+
+phenotype <- as.data.frame(phenotype[1])
+colnames(phenotype) <- "Phenotype"
+
+ann.cols <- list(Phenotype = c(Ib_R = "#E18727B2", Ib_S = "#20854EB2"))
+
+hmap <- pheatmap(top.table2, color=col.pan, border_color = NA, annotation_colors = ann.cols,
+                 scale = "row", clustering_distance_rows = "correlation",
+                 annotation_col = phenotype, cluster_cols = FALSE,
+                 show_colnames= FALSE)
+hmap
+
+# Save Image
+png("Heatmap_GSE138126_Ib_RvsIb_S.png", units="in", width=6, height=5, res=1000)
+hmap
+dev.off()
+```
+
+```{r CorrPlot selected DEGs, echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+# Correlogram
+library(GGally)
+library(ggcorrplot)
+
+ex.interest3 <- t(top.table2)
+corr.mat <- round(cor(ex.interest3), 1)
+head(corr.mat[, 1:6])
+corr.plot <- ggcorrplot(corr.mat, hc.order = TRUE,
+                        type = "lower",tl.cex = 6,
+                        outline.col = "white", lab = FALSE,
+                        insig = "blank",
+                        colors = c("#00468BFF", "white","#ED0000FF"))
+corr.plot
+
+# Save Image
+png("Corrplot_DEGs.png", units="in", width=8, height=8, res=1000)
+corr.plot
+dev.off()
+
+```
+
+```{r Enrichment Analysis, echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+df.geneset <- subset(tT2, tT2$P.Value < pval.cutoff & abs(tT2$logFC) > lfc.cutoff )
+
+# Convert Probe ID into ENTREZID
+probes <- as.character(df.geneset$ID)
+probes.convert <- AnnotationDbi::select(HsAgilentDesign026652.db, probes,
+                                        columns=c("ENTREZID","ENSEMBL","GENENAME"),
+                                        keytype="PROBEID")
+colnames(probes.convert)[1] <- "ID" 
+df.geneset2 <- inner_join(df.geneset, probes.convert , by = "ID", all=TRUE)
+
+df.geneset2 <- subset(df.geneset2, select= c("ENTREZID","logFC"))
+df.geneset2  <- df.geneset2 %>% ## Checking if any duplicated Value, the maximum Abs will be kept
+  arrange(-abs(logFC)) %>%
+  filter(duplicated(ENTREZID) == FALSE)%>%
+  arrange(-logFC)
+
+gene_list <- df.geneset2[,2]
+names(gene_list) <- as.character(df.geneset2[,1])
+gene_list <- sort(gene_list, decreasing = TRUE)
+gene.set <- names(gene_list)
+
+hallmark.gmt <- msigdbr(species = "Homo sapiens", category = "H") %>% 
+  dplyr::select(gs_name, entrez_gene)
+gse.hallmark <- enricher(gene.set, TERM2GENE=hallmark.gmt,
+                         pvalueCutoff = pval.cutoff, pAdjustMethod = "fdr",
+                         qvalueCutoff = 0.2)
+head(gse.hallmark)
+
+gsea.hallmark <- GSEA(gene_list , TERM2GENE = hallmark.gmt,
+                      pvalueCutoff = pval.cutoff, pAdjustMethod = "fdr")
+head(gsea.hallmark)
+
+de <- gene.set
+edo <- enrichDGN(de)
+bplot.edo <- barplot(edo)
+edo2 <- gseDO(gene_list)
+dotplot.edo <- dotplot(edo2)
+
+c6.oncogene <- msigdbr(species = "Homo sapiens", category = "C6") %>% 
+  dplyr::select(gs_name, entrez_gene)
+gse.oncogene.c6 <- enricher(gene.set, TERM2GENE=c6.oncogene,
+                         pvalueCutoff = pval.cutoff, pAdjustMethod = "none",
+                         qvalueCutoff = 0.2)
+head(gse.oncogene.c6 )
+gsea.hallmark <- GSEA(gene_list, TERM2GENE = c6.oncogene,
+                      pvalueCutoff = pval.cutoff, pAdjustMethod = "none")
+head(gsea.hallmark)
+
+gse.go.cc <- gseGO(geneList= gene_list,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "CC")
+
+gse.go.bp <- gseGO(geneList= gene_list,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "BP")
+
+gse.go.mf <- gseGO(geneList     = gene_list,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "MF")
+
+gse.kegg <- gseKEGG(geneList     = gene_list,
+               organism     = 'hsa')
+
+# cNET
+library(ggnewscale)
+edox <- setReadable(edo, 'org.Hs.eg.db', 'ENTREZID')
+cnet.circular <- cnetplot(edox, foldChange=gene_list, circular = TRUE, colorEdge = TRUE)
+
+# Save Image
+png("cnet circular.png", units="px", width=2000, height=1800, res=150)
+cnet.circular
+dev.off()
+
+```
+
+```{r Cluster Gene, echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+# Cluster Gene Upregulated vs Downregulated
+df.geneclust <- df.geneset2 
+colnames(df.geneclust)[1] <- "Entrez"
+colnames(df.geneclust)[2] <- "FC"
+df.geneclust <- df.geneclust[abs(df.geneclust$FC) > lfc.cutoff,]
+df.geneclust$group[df.geneclust$FC > lfc.cutoff] <- "Upregulated"
+df.geneclust$group[df.geneclust$FC < lfc.cutoff] <- "Downregulated"
+
+comp.cluster <- compareCluster(Entrez~group, data=df.geneclust,
+                             fun='enrichGO', OrgDb='org.Hs.eg.db')
+
+head(as.data.frame(comp.cluster))
+dotplot.cluster <- dotplot(comp.cluster, x=~group)
+
+# Save Image
+png("dotplot compare cluster.png", units="px", width=1250, height=500, res=150)
+dotplot.cluster
+dev.off()
+
+emap.compcluster  <- pairwise_termsim(comp.cluster)
+emap.compcluster <- emapplot(emap.compcluster )
+emap.compcluster <- emap.compcluster + scale_fill_lancet()
+emap.compcluster 
+
+# Save Image
+png("emap compare cluster.png", units="px", width=2000, height=1200, res=200)
+emap.compcluster
+dev.off()
+
+##Enrichment map plot GO
+
+enrich.go <- enrichGO(gene=gene.set,
+                        OrgDb=org.Hs.eg.db,
+                        ont="MF")
+enrich.go <- simplify(enrich.go)
+enrich.go2 <- pairwise_termsim(enrich.go)
+emap.go.mf <- emapplot(enrich.go2)
+emap.go.mf
+
+# Save Image
+png("emapp go mf.png", units="px", width=1500, height=1000, res=150)
+emapplot(enrich.go2)
+dev.off()
+
+##Enrichment map plot KEGG
+
+enrich.kegg <- enrichKEGG( gene=gene.set,
+                           organism = "hsa",
+                           keyType = "kegg",
+                           pvalueCutoff = 0.05,
+                           use_internal_data = FALSE)
+enrich.kegg2 <- pairwise_termsim(enrich.kegg)
+emap.kegg <- emapplot(enrich.kegg2 )
+emap.kegg
+
+# Save Image
+png("emapp kegg.png", units="px", width=2000, height=2000, res=200)
+emapplot(enrich.kegg2 )
+dev.off()
+
+
+ck <- compareCluster(geneCluster = gene.set, fun = "enrichKEGG")
+```
+
+
+

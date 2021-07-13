@@ -1,0 +1,182 @@
+---
+title: "MetaIntegrator GSE4475, GSE44164, GSE69051 - DHL"
+author: "SAS"
+date: "7/8/2021"
+output: word_document
+---
+
+```{r General Data, echo=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(
+	echo = FALSE,
+	message = FALSE,
+	warning = FALSE
+)
+
+library(BiocManager)
+library(GEOquery)
+library(limma)
+library(MetaIntegrator)
+library(dplyr)
+library(tidyverse)
+library(openxlsx)
+
+#Download the data from GEO, this can take a little while
+dhl.data <- getGEOData(c("GSE4475","GSE69051"))
+
+# GSE4475 Replace Class
+c<- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,1,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,1,0,0,0,0)
+a <- dhl.data$originalData$GSE4475$class
+a <- as.vector(a)
+b <- names(dhl.data$originalData$GSE4475$class)
+names(c) <- b
+dhl.data$originalData$GSE4475$class <- replace(dhl.data$originalData$GSE4475$class, names(c), c)
+
+
+# GSE44164 Replace Class
+c<- c(0,0,1,1,0,1,1,1,0,1,0,0,0,0,1,1,0,1,1,1,0,0,0,0,1,0,0,0,0,1,1,0)
+a <- dhl.data$originalData$GSE44164$class
+a <- as.vector(a)
+b <- names(dhl.data$originalData$GSE44164$class)
+names(c) <- b
+dhl.data$originalData$GSE44164$class <- replace(dhl.data$originalData$GSE44164$class, names(c), c)
+
+# GSE69051 Replace Class
+c<- c(0,1,0,0,0,0,1,1,0,1,0,1,0,1,0,0,1,1,1,1,1,1,1,1,1,1,0,0,1,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)
+a <- dhl.data$originalData$GSE69051$class
+a <- as.vector(a)
+b <- names(dhl.data$originalData$GSE69051$class)
+names(c) <- b
+dhl.data$originalData$GSE69051$class <- replace(dhl.data$originalData$GSE69051$class, names(c), c)
+
+# Run Meta-Analysis
+dhlMetaAnalysis <- runMetaAnalysis(dhl.data, runLeaveOneOutAnalysis = F, maxCores = 1)
+
+# Identify Gene Signature
+dhlMetaAnalysis <- filterGenes(dhlMetaAnalysis, isLeaveOneOut = F, effectSizeThresh = 0.5, FDRThresh = 0.05)
+
+#Calculate Meta Score
+dhlScores <- calculateScore(filterObject = dhlMetaAnalysis$filterResults[[1]], datasetObject = dhlMetaAnalysis$originalData[[2]])
+
+result.positive <- as.data.frame(dhlMetaAnalysis$filterResults$FDR0.05_es0.5_nStudies1_looaFALSE_hetero0$posGeneNames)
+result.positive <- setNames(result.positive,"positive.genes")
+
+result.negative <- as.data.frame(dhlMetaAnalysis$filterResults$FDR0.05_es0.5_nStudies1_looaFALSE_hetero0$negGeneNames)
+result.negative <- setNames(result.negative,"negative.genes")
+
+pool.result <- dhlMetaAnalysis$metaAnalysis$pooledResults
+pool.result$gene <- rownames(pool.result)
+pool.result  <- pool.result  %>%
+  select(gene, everything())
+write.xlsx(print(pool.result),  file = "MetaIntegrator Pooled Result - DHL.xlsx")
+
+forestPlot(geneName="BCL2", metaObject = dhlMetaAnalysis)
+forestPlot(geneName="BTK", metaObject = dhlMetaAnalysis)
+forestPlot(geneName="CDO1", metaObject = dhlMetaAnalysis)
+forestPlot(geneName="ALOX15B", metaObject = dhlMetaAnalysis)
+
+
+png(filename = "Forestplot_interested_genes.png", width = 8, height = 5, res = 300, units = "in")
+forestPlot(geneName="CDO1", metaObject = dhlMetaAnalysis)
+dev.off()
+
+png(filename = "Forestplot_interested_genes2.png", width = 8, height = 5, res = 300, units = "in")
+forestPlot(geneName="ALOX15B", metaObject = dhlMetaAnalysis)
+dev.off()
+
+png(filename = "Forestplot_interested_genes3.png", width = 8, height = 5, res = 300, units = "in")
+forestPlot(geneName="HMOX1", metaObject = dhlMetaAnalysis)
+dev.off()
+
+
+heatmapPlot(metaObject = dhlMetaAnalysis, filterObject = dhlMetaAnalysis$filterResults[[1]])
+
+rocPlot(datasetObject = dhlMetaAnalysis$originalData$GSE4475, filterObject = dhlMetaAnalysis$filterResults[[1]])
+
+
+
+```
+
+
+```{r volcano, echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+library(EnhancedVolcano)
+library(ggsci)
+
+# Selected Gene List
+selected_gene_list <- Ferroptosis_driver$Symbol
+
+# Enhanced Volcano in DLBCL-DHL
+volc.plot.dhl.ma <-  EnhancedVolcano(pool.result,
+    lab = pool.result$gene,
+    selectLab = selected_gene_list,
+    title = 'DHL vs Non-DHL',
+    x = 'effectSize',
+    y = 'effectSizeFDR',
+    xlim = c(-1.5, 1.5),
+    ylim = c(0, 6),
+    pCutoff = 0.05,
+    FCcutoff = 0.5,
+    col=pal_jama("default")(4),
+    labSize = 4.0,
+    drawConnectors = TRUE,
+    widthConnectors = 0.3)
+volc.plot.dhl.ma
+
+png(filename = "volcano DHL-MetaAnalysis.png", width = 8, height = 8, res = 300, units = "in")
+volc.plot.dhl.ma
+dev.off()
+```
+
+```{r forest plot Ferroptosis, echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+library(forestplot)
+
+# Prespecified pool result with selected ferroptosis gene sets
+pool.result2 <- pool.result[(pool.result$gene %in% selected_gene_list),]
+pool.result2 <- pool.result2[pool.result2$effectSizePval < 0.05,]
+pool.result2 <- pool.result2 %>%
+ arrange(pool.result2$effectSize)
+pool.result2$eslower <- (pool.result2$effectSize - 1.96*pool.result2$effectSizeStandardError) 
+pool.result2$esupper <- (pool.result2$effectSize + 1.96*pool.result2$effectSizeStandardError) 
+
+# Forest Plot
+forestplot(pool.result2$gene, pool.result2$effectSize,
+           pool.result2$eslower, pool.result2$esupper, is.summary = FALSE, xlog = FALSE, zero = 0, lwd.zero = 3,boxsize = .4,
+           title = "Meta Analysis of Ferroptosis Genes")
+
+png(filename = "forest plot ferroptosis-MetaAnalysis.png", width = 8, height = 6, res = 300, units = "in")
+forestplot(pool.result2$gene, pool.result2$effectSize,
+           pool.result2$eslower, pool.result2$esupper, is.summary = FALSE, xlog = FALSE, zero = 0, lwd.zero = 3,boxsize = .4,
+           title = "Meta Analysis of Ferroptosis Driver Genes")
+dev.off()
+
+```
+
+```{r metagen, echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+library(meta)
+
+m.gen <- metagen(TE = effectSize,
+                 seTE = effectSizeStandardError,
+                 studlab = gene,
+                 data = pool.result2,
+                 sm = "SMD",
+                 comb.fixed = FALSE,
+                 comb.random = TRUE,
+                 method.tau = "REML",
+                 hakn = TRUE,
+                 title = "Ferroptosis Driver Genes MA")
+
+forest.meta(m.gen, 
+            sortvar = TE,
+            predict = TRUE, 
+            print.tau2 = FALSE,
+            leftlabs = c("Driver Genes", "Effect", "SE"))
+
+png(filename = "forest plot ferroptosis-pooled.png", width = 8, height = 6, res = 300, units = "in")
+forest.meta(m.gen, 
+            sortvar = TE,
+            predict = TRUE, 
+            print.tau2 = FALSE,
+            leftlabs = c("Driver Genes", "Effect", "SE"))
+dev.off()
+```
+
+
